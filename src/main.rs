@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::io;
 use std::io::Read;
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 mod tcp;
@@ -54,27 +54,21 @@ fn main() -> io::Result<()> {
 				}
 
 				let tcp_hdr_offset = ip_hdr_offset + ip_h.slice().len();
-				match etherparse::TcpHeaderSlice::from_slice(&buf[tcp_hdr_offset..]) {
+				match etherparse::TcpHeaderSlice::from_slice(&buf[tcp_hdr_offset..nbytes]) {
 					Ok(tcp_h) => {
-						connections.entry(Quad {
-							src_ip: (src, tcp_h.source_port()),
-							dst_ip: (dst, tcp_h.destination_port()),
-						}).or_default();
-
-						eprintln!(
-							"{}:{} -> {}:{}  {}B transfered over TCP",
-							src,
-							tcp_h.destination_port(),
-							dst,
-							tcp_h.destination_port(),
-							tcp_h.slice().len(),
-						);
+						let data_offset = tcp_hdr_offset + tcp_h.slice().len();
+						connections
+							.entry(Quad {
+								src_ip: (src, tcp_h.source_port()),
+								dst_ip: (dst, tcp_h.destination_port()),
+							})
+							.or_default()
+							.on_packet(ip_h, tcp_h, &buf[data_offset..nbytes]);
 					}
 					Err(e) => {
 						eprintln!("ignored weird packet: {:?}", e);
 					}
 				}
-
 			}
 			Err(e) => {
 				eprintln!("ignored weird packet: {:?}", e);
