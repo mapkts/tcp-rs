@@ -20,7 +20,7 @@ fn main() -> io::Result<()> {
 	// Set up tun inteface.
 	let mut config = tun::Configuration::default();
 	config
-		.address((10, 0, 0, 1))
+		.address((192, 168, 0, 1))
 		.netmask((255, 255, 255, 0))
 		.up();
 

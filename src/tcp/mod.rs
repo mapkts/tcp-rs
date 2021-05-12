@@ -5,10 +5,10 @@ use std::io::prelude::*;
 ///
 /// RFC 793 S3.2
 pub enum State {
-    Closed,
-    Listen,
+    // Closed,
+    // Listen,
     SynReceived,
-    // Established,
+    Established,
 }
 
 /// An end to end TCP connection.
@@ -16,6 +16,7 @@ pub struct Connection {
     state: State,
     send: SendSequenceSpace,
     recv: RecvSequenceSpace,
+    ip: etherparse::Ipv4Header,
 }
 
 /// State of the Send Sequence Space (RFC 793 S3.2 Fig4)
@@ -90,13 +91,14 @@ impl Connection {
         }
 
         let iss = 0;
+        let wnd = 1024;
         let mut conn = Connection {
             state: State::SynReceived,
             send: SendSequenceSpace {
                 iss,
                 una: iss,
                 nxt: iss + 1,
-                wnd: 10,
+                wnd: wnd,
                 up: false,
                 wl1: 0,
                 wl2: 0,
@@ -107,39 +109,34 @@ impl Connection {
                 nxt: tcp_h.sequence_number() + 1,
                 up: false,
             },
+            ip: etherparse::Ipv4Header::new(
+                0,
+                64,
+                etherparse::IpTrafficClass::Tcp,
+                ip_h.destination_addr().octets(),
+                ip_h.source_addr().octets(),
+            ),
         };
 
         // need to start establishing a connection
         let mut syn_ack =
-            etherparse::TcpHeader::new(tcp_h.destination_port(), tcp_h.source_port(), 0, 10);
+            etherparse::TcpHeader::new(tcp_h.destination_port(), tcp_h.source_port(), iss, wnd);
         syn_ack.acknowledgment_number = conn.recv.nxt;
         syn_ack.syn = true;
         syn_ack.ack = true;
 
-        let mut ip = etherparse::Ipv4Header::new(
-            syn_ack.header_len(),
-            64,
-            etherparse::IpTrafficClass::Tcp,
-            ip_h.destination_addr().octets(),
-            ip_h.source_addr().octets(),
-        );
+        conn.ip
+            .set_payload_len(syn_ack.header_len() as usize)
+            .expect("cannot set payload len");
 
         // write out the headers
         let unwritten = {
             let mut unwritten = &mut buf[..];
-            ip.write(&mut unwritten).unwrap();
+            conn.ip.write(&mut unwritten).unwrap();
             syn_ack.write(&mut unwritten).unwrap();
             unwritten.len()
         };
         nic.write(&buf[..unwritten])?;
-        // eprintln!(
-        //     "{}:{} -> {}:{}  {}B transfered over TCP",
-        //     ip_h.source_addr(),
-        //     tcp_h.source_port(),
-        //     ip_h.destination_addr(),
-        //     tcp_h.destination_port(),
-        //     data.len(),
-        // );
         Ok(Some(conn))
     }
 
@@ -150,6 +147,39 @@ impl Connection {
         tcp_h: etherparse::TcpHeaderSlice,
         data: &'a [u8],
     ) -> io::Result<()> {
+        // First, check if sequence numbers are valid (RFC 793 S3.3)
+        //
+        // A new acknowledgment (called an "acceptable ack"), is one for which
+        // the inequality below holds:
+        //
+        // SND.UNA < SEG.ACK =< SND.NXT
+        let ack = tcp_h.acknowledgment_number();
+        if self.send.una < ack {
+            // innequality above is violated if and only if NXT is between UNA and ACK
+            if self.send.nxt >= self.send.una && self.send.nxt < ack {
+                return Ok(());
+            }
+        } else {
+            // innequality is hold if and only if NXT is between UNA and ACK
+            if self.send.nxt >= ack && self.send.nxt < self.send.una {
+            } else {
+                return Ok(());
+            }
+        };
+
+        match self.state {
+            State::SynReceived => {
+                // expected to get an ACK for our SYN
+            }
+            State::Established => {
+                //
+            }
+        }
+
         Ok(())
     }
+}
+
+fn wrapping_lt(lhs: u32, rhs: u32) -> bool {
+    lhs.wrapping_sub(rhs) > (1 << 31)
 }
